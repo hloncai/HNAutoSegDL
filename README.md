@@ -1,1 +1,1 @@
-# H-N-AutoSeg
+# **Head Neck AutoSeg**
