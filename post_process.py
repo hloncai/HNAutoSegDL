@@ -32,7 +32,8 @@ OLD_NAMES = ['Bone_Mandiblez',
              'Parotid_Lz',
              'Parotid_Rz',
              'SpinalCordz',
-             'Tracheaz']
+             'Tracheaz',
+             'Thyroidz']
 NEW_NAMES = ['Bone_Mandible',
              'BrainStem',
              'Cavity_Oral',
@@ -54,7 +55,8 @@ NEW_NAMES = ['Bone_Mandible',
              'Parotid_L',
              'Parotid_R',
              'SpinalCord',
-             'Trachea']
+             'Trachea', 
+             'Thyroid']
 
 def make_dicom(dcmfolder, segfolder, label, smooth=False, min_area=5):
     """
@@ -106,10 +108,9 @@ def make_dicom(dcmfolder, segfolder, label, smooth=False, min_area=5):
     # For each ROI
     for sf in segfiles:
         roiname = NEW_NAMES[[i for i, x in enumerate(OLD_NAMES) if x in sf][0]]
-        roioldname = [x for i, x in enumerate(OLD_NAMES) if x in sf][0]
         mask = itk.GetArrayFromImage(itk.ReadImage(os.path.join(segfolder, sf))).astype('u1')
         not_empty = np.array([x.max() > 0 for x in mask])
-        index = ref_numbers.index(name_to_num[roioldname])
+        index = ref_numbers.index(name_to_num[roiname])
         cont_seq = pd.Sequence()
         rs.ROIContourSequence[index].ContourSequence = cont_seq
         for m, z, uid in zip(mask[not_empty], zvec[not_empty], slice_uids[not_empty]):
@@ -135,7 +136,7 @@ def make_dicom(dcmfolder, segfolder, label, smooth=False, min_area=5):
     rs.StructureSetLabel = label
     pd.dcmwrite(os.path.join(segfolder, label + '.dcm'), rs)
 
-def get_contours(mask, pix_dims, origin, min_area=5):
+def get_contours(mask, pix_dims, origin, min_area=5, use4conn=False):
     """
     Finds contour points for the boundaries of regions in a 2D binary mask. Should handle
     handle arbitrary morphology (multiple regions, holes, etc.)
@@ -160,9 +161,27 @@ def get_contours(mask, pix_dims, origin, min_area=5):
     list of ndarray of x, y point coordinates for the contours of each region in the mask
 
     """
-    contours, _ = cv.findContours(mask, cv.RETR_LIST, cv.CHAIN_APPROX_NONE)
+    _, contours, _ = cv.findContours(mask, cv.RETR_LIST, cv.CHAIN_APPROX_NONE)
     contours = [np.squeeze(x, axis=1) for x in contours]
-    complete = contours
+    # Insert skipped 4-connected points
+    if use4conn:
+        neighbors = [(1,0), (1,-1), (0,-1), (-1,-1), (-1,0), (-1,1), (0,1), (1,1)]
+        complete = []
+        for c in contours:
+            distances = np.linalg.norm(np.diff(c, axis=0, append=[c[0]]), axis=1)
+            skipped = np.where(distances > 1)[0]
+            if skipped.any():
+                points = []
+                for idx in skipped:
+                    start = neighbors.index(tuple(c[idx-1] - c[idx])) // 2
+                    search = ((neighbors[::2][start:] + neighbors[::2][:start])[1:] + c[idx])
+                    values = mask[tuple(search[:,::-1].T)]
+                    points.append(search[np.argmax(values)])
+                complete.append(np.insert(c, [x + 1 for x in skipped], points, axis=0))
+            else:
+                complete.append(c)           
+    else:
+        complete = contours
     # Convert to DICOM coordinate system and discard small contours
     complete = [x * pix_dims + origin for x in complete]
     areas = [cv.contourArea(x.astype('f4')) for x in complete]
@@ -254,3 +273,8 @@ def relax_net(nodes, power=3, iterations=10, grid_ext=0.06, grid_num=7):
         cost = (d1**2 + d2**2 + np.abs(d0)**power).sum(axis=1)
         new_nodes += grid.T[cost.argmin(axis=1)]
     return new_nodes
+
+if __name__ == "__main__":
+    dcmfolder = '/media/lingshu/data2/HNProsp/Gallagher, John/'
+    segfolder = '/media/lingshu/ssd/Head_Neck/Benchmark_Labelmaps/Second_Labelmap/Gallagher, John/' # where the output RTStruct is saved also
+    make_dicom(dcmfolder, segfolder, 'AutoTest')
